@@ -5,7 +5,7 @@
 
 --
 -- Module      : Graphics.Rendering.TrueType.STB
--- Version     : 0.1
+-- Version     : 0.1.1
 -- License     : Public Domain
 -- Author      : Balazs Komuves
 -- Maintainer  : bkomuves (plus) hackage (at) gmail (dot) com
@@ -105,11 +105,13 @@ withByteString :: ByteString -> (Ptr Word8 -> IO a) -> IO a
 withByteString bs action = withForeignPtr fptr h where
   (fptr,ofs,len) = BI.toForeignPtr bs
   h p = action (plusPtr p ofs) 
-  
-newtype FontInfo = FontInfo (ForeignPtr CFontInfo)
+
+-- we need to refer to the the original font data here, 
+-- otherwise it could be garbage collected !!!  
+data FontInfo = FontInfo TrueType (ForeignPtr CFontInfo)
 
 withFontInfo :: FontInfo -> (Ptr CFontInfo -> IO a) -> IO a
-withFontInfo (FontInfo fptr) = withForeignPtr fptr
+withFontInfo (FontInfo _ fptr) = withForeignPtr fptr
 
 --------------------------------------------------------------------------------
 
@@ -128,7 +130,7 @@ initFont :: TrueType -> Offset -> IO FontInfo
 initFont ttf (Offset ofs) = withTrueType ttf $ \ptr -> do
   fq <- mallocForeignPtr :: IO (ForeignPtr CFontInfo)
   withForeignPtr fq $ \q -> stbtt_InitFont q ptr (fromIntegral ofs)
-  return (FontInfo fq)    
+  return (FontInfo ttf fq)    
     
 --------------------------------------------------------------------------------
 
