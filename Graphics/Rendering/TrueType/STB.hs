@@ -1,4 +1,8 @@
 
+-- TODO: 
+--   * rewrite the file loading so that it we do not depend on ByteString
+--   * automatic glyph indexing, texture creation
+
 --
 -- Module      : Graphics.Rendering.TrueType.STB
 -- Version     : 0.1
@@ -42,10 +46,13 @@ module Graphics.Rendering.TrueType.STB
   --
   , Scaling
   , Bitmap(..)
+  , newBitmap
   , withBitmap
   , BitmapOfs
   , getGlyphBitmapBox
   , newGlyphBitmap
+  , renderGlyphIntoBitmap'
+  , renderGlyphIntoBitmap
   , bitmapArray
   , bitmapFloatArray
   --
@@ -246,6 +253,13 @@ data Bitmap = Bitmap
 -- | An offset (for example the pivot of the glyph) 
 type BitmapOfs = (Int,Int)
   
+newBitmap :: (Int,Int) -> IO Bitmap
+newBitmap siz@(xsiz,ysiz) = do
+  let n = xsiz*ysiz
+  fptr <- mallocForeignPtrBytes n
+  withForeignPtr fptr $ \ptr -> pokeArray ptr (replicate n 0)
+  return (Bitmap siz fptr)
+    
 withBitmap :: Bitmap -> (Int -> Int -> Ptr Word8 -> IO a) -> IO a
 withBitmap bm action = do
   let (xsiz,ysiz) = bitmapSize bm
@@ -328,6 +342,29 @@ newGlyphBitmap fontinfo glyph (xscale,yscale) = do
           ofs = (fromIntegral xofs, fromIntegral yofs)
       return $ (bm,ofs)
 
+-- | The offset is the /top-left corner/ of the bounding box of the glyph,
+-- and must be nonnegative (otherwise nothing will happen).
+renderGlyphIntoBitmap' :: FontInfo -> Glyph -> Scaling -> Bitmap -> BitmapOfs -> IO ()
+renderGlyphIntoBitmap' fontinfo glyph (xscale,yscale) bm (xofs,yofs) = do
+  let (xsiz,ysiz) = bitmapSize bm 
+  when ( xofs < xsiz && yofs < ysiz && xofs >= 0 && yofs >= 0 ) $ do
+    withFontInfo fontinfo $ \ptr -> do
+      withBitmap bm $ \width height pbm -> do
+        let pbm' = pbm `plusPtr` (width*yofs+xofs)
+        stbtt_MakeGlyphBitmap ptr pbm'
+          (fromIntegral $ width - xofs) (fromIntegral $ height - yofs)
+          (fromIntegral width)  -- stride
+          (realToFrac xscale) (realToFrac yscale) 
+          (cglyphindex glyph)        
+
+-- | The offset is the /origin/ of the glyph. If the glyph extends from the
+-- bitmap in the positive direction, it is clipped; however, if it extends
+-- in the negative direction, no drawing will happen!
+renderGlyphIntoBitmap ::  FontInfo -> Glyph -> Scaling -> Bitmap -> BitmapOfs -> IO ()
+renderGlyphIntoBitmap fontinfo glyph scaling@(xscale,yscale) bm ofs@(xofs,yofs) = do
+  BBox (x0,y0) _ <- getGlyphBitmapBox fontinfo glyph scaling
+  renderGlyphIntoBitmap' fontinfo glyph scaling bm (xofs+x0,yofs+y0) 
+         
 --------------------------------------------------------------------------------
 
 {-
