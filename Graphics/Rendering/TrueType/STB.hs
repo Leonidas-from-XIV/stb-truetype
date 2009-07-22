@@ -29,14 +29,14 @@
 module Graphics.Rendering.TrueType.STB 
   ( TrueType
   , Offset
-  , FontInfo
+  , Font
   , Glyph
   --
   , loadTTF
   , withTTF
   , enumerateFonts
   , initFont
-  , findGlyphIndex
+  , findGlyph
   --
   , Unscaled
   , HorizontalMetrics(..)
@@ -126,14 +126,14 @@ withByteString bs action = withForeignPtr fptr h where
 
 -- we need to refer to the the original font data here, 
 -- otherwise it could be garbage collected !!!  
-data FontInfo = FontInfo 
+data Font = Font 
   { _fontData :: TrueType 
   , _fontInfo :: ForeignPtr CFontInfo
   , _glyphMap :: UnicodeCache (Maybe Glyph) 
   } 
 
-withFontInfo :: FontInfo -> (Ptr CFontInfo -> IO a) -> IO a
-withFontInfo (FontInfo _ fptr _) = withForeignPtr fptr
+withFontInfo :: Font -> (Ptr CFontInfo -> IO a) -> IO a
+withFontInfo (Font _ fptr _) = withForeignPtr fptr
 
 --------------------------------------------------------------------------------
 
@@ -183,12 +183,12 @@ enumerateFonts ttf = withTrueType ttf $ \ptr -> worker ptr 0 where
         os <- worker ptr (i+1) 
         return (Offset o : os)
     
-initFont :: TrueType -> Offset -> IO FontInfo
+initFont :: TrueType -> Offset -> IO Font
 initFont ttf (Offset ofs) = withTrueType ttf $ \ptr -> do
   fq <- mallocForeignPtr :: IO (ForeignPtr CFontInfo)
   withForeignPtr fq $ \q -> stbtt_InitFont q ptr (fromIntegral ofs)
   mglyphmap <- newUnicodeCache -- newMVar Map.empty
-  return (FontInfo ttf fq mglyphmap)    
+  return (Font ttf fq mglyphmap)    
     
 --------------------------------------------------------------------------------
 
@@ -205,12 +205,12 @@ withTTF fname action = do
 --------------------------------------------------------------------------------
 
 -- | Note: this is cached.
-findGlyphIndex :: FontInfo -> Char -> IO (Maybe Glyph)
-findGlyphIndex fontinfo@(FontInfo _ _ glyphmap) char =
+findGlyph :: Font -> Char -> IO (Maybe Glyph)
+findGlyph fontinfo@(Font _ _ glyphmap) char =
   lookupUnicodeCache char (findGlyphNotCached fontinfo) glyphmap 
 
 -- this is not cached
-findGlyphNotCached :: FontInfo -> Char -> IO (Maybe Glyph)
+findGlyphNotCached :: Font -> Char -> IO (Maybe Glyph)
 findGlyphNotCached fontinfo char =
   withFontInfo fontinfo $ \ptr -> do
     let codepoint = ord char
@@ -228,7 +228,7 @@ data CachedBitmap = CBM Bitmap BitmapOfs (HorizontalMetrics Float)
 
 -- | A \"bitmap cache\".
 data BitmapCache = BMCache
-  { bmc_fontinfo :: FontInfo
+  { bmc_fontinfo :: Font
   , bmc_scaling  :: (Float,Float)
   , bmc_cache    :: UnicodeCache (Maybe CachedBitmap)
   , bmc_vmetrics :: VerticalMetrics Float
@@ -243,7 +243,7 @@ bmcScaling = bmc_scaling
 
 -- | Creates a new cache where glyph bitmaps with the given scaling
 -- will be stored
-newBitmapCache :: FontInfo -> (Float,Float) -> IO BitmapCache 
+newBitmapCache :: Font -> (Float,Float) -> IO BitmapCache 
 newBitmapCache fontinfo scaling@(xscale,yscale) = do 
   cache <- newUnicodeCache
   vmetu <- getFontVerticalMetrics fontinfo
@@ -253,15 +253,15 @@ newBitmapCache fontinfo scaling@(xscale,yscale) = do
 -- | Fetches a rendered glyph bitmap from the cache (rendering it first if
 -- it was not present in the cache before).
 getCachedBitmap :: BitmapCache -> Char -> IO (Maybe CachedBitmap)
-getCachedBitmap (BMCache fontinfo scaling@(xscale,yscale) cache vmet) char = 
+getCachedBitmap (BMCache font scaling@(xscale,yscale) cache vmet) char = 
   lookupUnicodeCache char createBitmap cache
   where
     createBitmap char = do
-      mglyph <- findGlyphIndex fontinfo char
+      mglyph <- findGlyph font char
       case mglyph of
         Just glyph -> do
-          (bm,ofs) <- newGlyphBitmap fontinfo glyph scaling
-          hmetu <- getGlyphHorizontalMetrics fontinfo glyph
+          (bm,ofs) <- newGlyphBitmap font glyph scaling
+          hmetu <- getGlyphHorizontalMetrics font glyph
           let hmets = fmap (\x -> xscale * fromIntegral x) hmetu 
           return $ Just (CBM bm ofs hmets)
         Nothing -> do
@@ -312,7 +312,7 @@ data BoundingBox a = BBox (a,a) (a,a) deriving Show
 
 --------------------------------------------------------------------------------
      
-getFontVerticalMetrics :: FontInfo -> IO (VerticalMetrics Unscaled)
+getFontVerticalMetrics :: Font -> IO (VerticalMetrics Unscaled)
 getFontVerticalMetrics fontinfo = 
   withFontInfo fontinfo $ \ptr -> do
     alloca $ \pasc -> alloca $ \pdesc -> alloca $ \pgap -> do
@@ -328,7 +328,7 @@ getFontVerticalMetrics fontinfo =
 
 --------------------------------------------------------------------------------
 
-getGlyphHorizontalMetrics :: FontInfo -> Glyph -> IO (HorizontalMetrics Unscaled)
+getGlyphHorizontalMetrics :: Font -> Glyph -> IO (HorizontalMetrics Unscaled)
 getGlyphHorizontalMetrics fontinfo glyph = 
   withFontInfo fontinfo $ \ptr -> do
     alloca $ \padv -> alloca $ \plsb  -> do
@@ -341,13 +341,13 @@ getGlyphHorizontalMetrics fontinfo glyph =
         }
         
 -- | This is not yet implemented in @stb_truetype@; it always returns 0.
-getGlyphKernAdvance :: FontInfo -> Glyph -> Glyph -> IO Unscaled
+getGlyphKernAdvance :: Font -> Glyph -> Glyph -> IO Unscaled
 getGlyphKernAdvance fontinfo glyph1 glyph2 = 
   withFontInfo fontinfo $ \ptr -> do
     kern <- stbtt_GetGlyphKernAdvance ptr (cglyphindex glyph1) (cglyphindex glyph1)
     return (fromIntegral kern)
     
-getGlyphBoundingBox :: FontInfo -> Glyph -> IO (BoundingBox Unscaled)
+getGlyphBoundingBox :: Font -> Glyph -> IO (BoundingBox Unscaled)
 getGlyphBoundingBox fontinfo glyph =
   withFontInfo fontinfo $ \ptr -> do
     alloca $ \px0 -> alloca $ \py0 -> alloca $ \px1 -> alloca $ \py1 -> do
@@ -429,7 +429,7 @@ bitmapFloatArray bm =
 -- Note that the bitmap uses /y-increases-down/, but the shape uses
 -- /y-increases-up/, so the results of 'getGlyphBitmapBox' and 
 -- 'getGlyphBoundingBox' are inverted.
-getGlyphBitmapBox :: FontInfo -> Glyph -> Scaling -> IO (BoundingBox Int)
+getGlyphBitmapBox :: Font -> Glyph -> Scaling -> IO (BoundingBox Int)
 getGlyphBitmapBox fontinfo glyph (xscale,yscale) =
   withFontInfo fontinfo $ \ptr -> do
     alloca $ \px0 -> alloca $ \py0 -> alloca $ \px1 -> alloca $ \py1 -> do
@@ -445,7 +445,7 @@ getGlyphBitmapBox fontinfo glyph (xscale,yscale) =
 -- | Creates a new bitmap just enough to fit the glyph with the given scaling,
 -- and renders the glyph into it. The offset returned is the offset of the glyph origin
 -- within the bitmap.
-newGlyphBitmap :: FontInfo -> Glyph -> Scaling -> IO (Bitmap,BitmapOfs)
+newGlyphBitmap :: Font -> Glyph -> Scaling -> IO (Bitmap,BitmapOfs)
 newGlyphBitmap fontinfo glyph (xscale,yscale) = do
   withFontInfo fontinfo $ \ptr -> do
     alloca $ \pxsiz -> alloca $ \pysiz -> alloca $ \pxofs -> alloca $ \pyofs -> do
@@ -464,7 +464,7 @@ newGlyphBitmap fontinfo glyph (xscale,yscale) = do
 
 -- | The offset is the /top-left corner/ of the bounding box of the glyph,
 -- and must be nonnegative (otherwise nothing will happen).
-renderGlyphIntoBitmap' :: FontInfo -> Glyph -> Scaling -> Bitmap -> BitmapOfs -> IO ()
+renderGlyphIntoBitmap' :: Font -> Glyph -> Scaling -> Bitmap -> BitmapOfs -> IO ()
 renderGlyphIntoBitmap' fontinfo glyph (xscale,yscale) bm (xofs,yofs) = do
   let (xsiz,ysiz) = bitmapSize bm 
   when ( xofs < xsiz && yofs < ysiz && xofs >= 0 && yofs >= 0 ) $ do
@@ -480,7 +480,7 @@ renderGlyphIntoBitmap' fontinfo glyph (xscale,yscale) bm (xofs,yofs) = do
 -- | The offset is the /origin/ of the glyph. If the glyph extends from the
 -- bitmap in the positive direction, it is clipped; however, if it extends
 -- in the negative direction, no drawing will happen!
-renderGlyphIntoBitmap ::  FontInfo -> Glyph -> Scaling -> Bitmap -> BitmapOfs -> IO ()
+renderGlyphIntoBitmap ::  Font -> Glyph -> Scaling -> Bitmap -> BitmapOfs -> IO ()
 renderGlyphIntoBitmap fontinfo glyph scaling@(xscale,yscale) bm ofs@(xofs,yofs) = do
   BBox (x0,y0) _ <- getGlyphBitmapBox fontinfo glyph scaling
   renderGlyphIntoBitmap' fontinfo glyph scaling bm (xofs+x0,yofs+y0) 
