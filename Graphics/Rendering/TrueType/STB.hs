@@ -161,11 +161,11 @@ data VerticalMetrics = VMetrics
   }
   deriving Show
   
--- | @ascent - descent + lineGap@
+-- | As calculated by @(ascent - descent + lineGap)@.
 lineAdvance :: VerticalMetrics -> Unscaled
 lineAdvance vm = ascent vm - descent vm + lineGap vm  
 
--- | @ascent - descent@
+-- | As calculated by @(ascent - descent)@.
 verticalSize :: VerticalMetrics -> Unscaled
 verticalSize vm = ascent vm - descent vm
 
@@ -180,7 +180,7 @@ data HorizontalMetrics = HMetrics
   }
   deriving Show
   
--- | @BBox (x0,y0) (x1,y1)@
+-- | The convention is @BBox (x0,y0) (x1,y1)@.
 data BoundingBox a = BBox (a,a) (a,a) deriving Show
 
 --------------------------------------------------------------------------------
@@ -213,7 +213,7 @@ getGlyphHorizontalMetrics fontinfo glyph =
         , leftSideBearing = fromIntegral lsb
         }
         
--- | This is not yet implemented in @stb_truetype@; it always return 0.
+-- | This is not yet implemented in @stb_truetype@; it always returns 0.
 getGlyphKernAdvance :: FontInfo -> Glyph -> Glyph -> IO Unscaled
 getGlyphKernAdvance fontinfo glyph1 glyph2 = 
   withFontInfo fontinfo $ \ptr -> do
@@ -237,12 +237,13 @@ getGlyphBoundingBox fontinfo glyph =
 
 type Scaling = (Float,Float)
 
+-- | A 8-bit grayscale bitmap.
 data Bitmap = Bitmap
   { bitmapSize :: (Int,Int)
   , bitmapPtr  :: ForeignPtr Word8
   }
 
--- an offset (for example the pivot of the glyph) 
+-- | An offset (for example the pivot of the glyph) 
 type BitmapOfs = (Int,Int)
   
 withBitmap :: Bitmap -> (Int -> Int -> Ptr Word8 -> IO a) -> IO a
@@ -287,6 +288,13 @@ bitmapFloatArray bm =
 
 -- | Returns the size of the bitmap (in pixels) needed to 
 -- render the glyph with the given scaling.
+--
+-- The box is centered around the glyph origin; so the
+-- bitmap width is @x1-x0@, height is @y1-y0@, and location to place
+-- the bitmap top left is @(leftSideBearing*scale,y0)@.
+-- Note that the bitmap uses /y-increases-down/, but the shape uses
+-- /y-increases-up/, so the results of 'getGlyphBitmapBox' and 
+-- 'getGlyphBoundingBox' are inverted.
 getGlyphBitmapBox :: FontInfo -> Glyph -> Scaling -> IO (BoundingBox Int)
 getGlyphBitmapBox fontinfo glyph (xscale,yscale) =
   withFontInfo fontinfo $ \ptr -> do
@@ -300,6 +308,9 @@ getGlyphBitmapBox fontinfo glyph (xscale,yscale) =
         (fromIntegral x0, fromIntegral y0)
         (fromIntegral x1, fromIntegral y1)
 
+-- | Creates a new bitmap just enough to fit the glyph with the given scaling,
+-- and renders the glyph into it. The offset returned is the offset of the glyph origin
+-- within the bitmap.
 newGlyphBitmap :: FontInfo -> Glyph -> Scaling -> IO (Bitmap,BitmapOfs)
 newGlyphBitmap fontinfo glyph (xscale,yscale) = do
   withFontInfo fontinfo $ \ptr -> do
