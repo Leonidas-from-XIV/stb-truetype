@@ -2,6 +2,10 @@
 -- TODO: 
 --   * rewrite the file loading so that it we do not depend on ByteString
 --   * automatic glyph indexing, texture creation
+--
+-- BUG in stb_truetype? 
+--   * compound contours not implemented yet... 
+--
 
 --
 -- Module      : Graphics.Rendering.TrueType.STB
@@ -17,6 +21,8 @@
 -- | This is a wrapper around Sean Barrett's TrueType font rasterizer code.
 -- The original can be found at <http://nothings.org/stb/stb_truetype.h>.
 -- The version of @stb-truetype@ used here is @0.2@.
+--
+-- Note: it seems that compound glyphs are not implemented yet!
 
 {-# LANGUAGE CPP, ForeignFunctionInterface #-}
 {-# CFILES cbits/wrapper.c #-}  -- for Hugs (?)
@@ -56,6 +62,12 @@ module Graphics.Rendering.TrueType.STB
   , bitmapArray
   , bitmapFloatArray
   --
+  , CachedBitmap(..)
+  , BitmapCache
+  , bmcVerticalMetrics
+  , bmcScaling
+  , newBitmapCache
+  , getCachedBitmap
   
   ) where
 
@@ -63,6 +75,7 @@ module Graphics.Rendering.TrueType.STB
 
 import Control.Monad
 import Control.Applicative
+import Control.Concurrent.MVar
 
 import Data.Char
 import Data.Maybe
@@ -74,7 +87,12 @@ import Data.Array.Unboxed
 import qualified Data.Array.Base as Arr 
 #endif
 
-import Foreign
+--import Data.Map (Map)
+--import qualified Data.Map as Map
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IntMap
+
+import Foreign hiding (newArray)
 import Foreign.C
 
 import Data.ByteString (ByteString)
@@ -87,10 +105,10 @@ import qualified Data.ByteString.Internal as BI
 newtype TrueType = TrueType ByteString
 
 -- | A font offset inside a TrueType font file.
-newtype Offset = Offset Int deriving Show
+newtype Offset = Offset Int deriving (Eq,Ord,Show)
 
 -- | A glyph inside a font.
-newtype Glyph = Glyph Int deriving Show
+newtype Glyph = Glyph Int deriving (Eq,Ord,Show)
 
 ccodepoint :: Char -> CCodepoint
 ccodepoint = fromIntegral . ord
@@ -108,11 +126,50 @@ withByteString bs action = withForeignPtr fptr h where
 
 -- we need to refer to the the original font data here, 
 -- otherwise it could be garbage collected !!!  
-data FontInfo = FontInfo TrueType (ForeignPtr CFontInfo)
+data FontInfo = FontInfo 
+  { _fontData :: TrueType 
+  , _fontInfo :: ForeignPtr CFontInfo
+  , _glyphMap :: UnicodeCache (Maybe Glyph) 
+  } 
 
 withFontInfo :: FontInfo -> (Ptr CFontInfo -> IO a) -> IO a
-withFontInfo (FontInfo _ fptr) = withForeignPtr fptr
+withFontInfo (FontInfo _ fptr _) = withForeignPtr fptr
 
+--------------------------------------------------------------------------------
+
+-- Organized into small continous blocks (say 128 characters)
+-- so lookup should pretty very fast
+type UnicodeCache a = MVar (IntMap (IOArray Char (Maybe a)))
+
+unicodeCacheGranularity = 128 :: Int
+
+newUnicodeCache :: IO (UnicodeCache a)
+newUnicodeCache = newMVar (IntMap.empty)
+
+lookupUnicodeCache :: Char -> (Char -> IO a) -> UnicodeCache a -> IO a
+lookupUnicodeCache char calculate cache = do
+  themap <- takeMVar cache  
+  let k = ord char `div` unicodeCacheGranularity
+  case IntMap.lookup k themap of
+    Just arr -> do
+      putMVar cache themap
+      mvalue <- readArray arr char
+      case mvalue of
+        Just value -> do
+          return value
+        Nothing -> do
+          new <- calculate char
+          writeArray arr char (Just new)
+          return new         
+    Nothing -> do
+      let u = k*unicodeCacheGranularity
+      let v = u + unicodeCacheGranularity - 1
+      arr <- newArray (chr u, chr v) Nothing
+      new <- calculate char
+      writeArray arr char (Just new)
+      putMVar cache (IntMap.insert k arr themap)
+      return new
+      
 --------------------------------------------------------------------------------
 
 -- | Enumerates the fonts found in a TrueType file.
@@ -130,7 +187,8 @@ initFont :: TrueType -> Offset -> IO FontInfo
 initFont ttf (Offset ofs) = withTrueType ttf $ \ptr -> do
   fq <- mallocForeignPtr :: IO (ForeignPtr CFontInfo)
   withForeignPtr fq $ \q -> stbtt_InitFont q ptr (fromIntegral ofs)
-  return (FontInfo ttf fq)    
+  mglyphmap <- newUnicodeCache -- newMVar Map.empty
+  return (FontInfo ttf fq mglyphmap)    
     
 --------------------------------------------------------------------------------
 
@@ -146,15 +204,69 @@ withTTF fname action = do
   
 --------------------------------------------------------------------------------
 
+-- | Note: this is cached.
 findGlyphIndex :: FontInfo -> Char -> IO (Maybe Glyph)
-findGlyphIndex fontinfo char = 
+findGlyphIndex fontinfo@(FontInfo _ _ glyphmap) char =
+  lookupUnicodeCache char (findGlyphNotCached fontinfo) glyphmap 
+
+-- this is not cached
+findGlyphNotCached :: FontInfo -> Char -> IO (Maybe Glyph)
+findGlyphNotCached fontinfo char =
   withFontInfo fontinfo $ \ptr -> do
     let codepoint = ord char
     i <- stbtt_FindGlyphIndex ptr (fromIntegral codepoint)
-    return $ if i == 0 
-      then Nothing
-      else Just $ Glyph (fromIntegral i)
+    if i == 0 
+      then return Nothing
+      else do
+        let glyph = Glyph (fromIntegral i)
+        return (Just glyph)
 
+--------------------------------------------------------------------------------
+
+-- | Note: the metrics are scaled!
+data CachedBitmap = CBM Bitmap BitmapOfs (HorizontalMetrics Float)
+
+-- | A \"bitmap cache\".
+data BitmapCache = BMCache
+  { bmc_fontinfo :: FontInfo
+  , bmc_scaling  :: (Float,Float)
+  , bmc_cache    :: UnicodeCache (Maybe CachedBitmap)
+  , bmc_vmetrics :: VerticalMetrics Float
+  }
+
+-- | Note: these metrics are scaled!
+bmcVerticalMetrics :: BitmapCache -> VerticalMetrics Float
+bmcVerticalMetrics = bmc_vmetrics
+
+bmcScaling :: BitmapCache -> Scaling
+bmcScaling = bmc_scaling
+
+-- | Creates a new cache where glyph bitmaps with the given scaling
+-- will be stored
+newBitmapCache :: FontInfo -> (Float,Float) -> IO BitmapCache 
+newBitmapCache fontinfo scaling@(xscale,yscale) = do 
+  cache <- newUnicodeCache
+  vmetu <- getFontVerticalMetrics fontinfo
+  let vmets = fmap (\y -> yscale * fromIntegral y) vmetu  
+  return $ BMCache fontinfo scaling cache vmets
+  
+-- | Fetches a rendered glyph bitmap from the cache (rendering it first if
+-- it was not present in the cache before).
+getCachedBitmap :: BitmapCache -> Char -> IO (Maybe CachedBitmap)
+getCachedBitmap (BMCache fontinfo scaling@(xscale,yscale) cache vmet) char = 
+  lookupUnicodeCache char createBitmap cache
+  where
+    createBitmap char = do
+      mglyph <- findGlyphIndex fontinfo char
+      case mglyph of
+        Just glyph -> do
+          (bm,ofs) <- newGlyphBitmap fontinfo glyph scaling
+          hmetu <- getGlyphHorizontalMetrics fontinfo glyph
+          let hmets = fmap (\x -> xscale * fromIntegral x) hmetu 
+          return $ Just (CBM bm ofs hmets)
+        Nothing -> do
+          return Nothing
+        
 --------------------------------------------------------------------------------
   
 type Unscaled = Int  
@@ -163,38 +275,44 @@ type Unscaled = Int
 -- is the coordinate below the baseline the font extends (i.e. it is typically negative)
 -- 'lineGap' is the spacing between one row's descent and the next row's ascent...
 -- so you should advance the vertical position by @ascent - descent + lineGap@      
-data VerticalMetrics = VMetrics
-  { ascent  :: Unscaled      
-  , descent :: Unscaled
-  , lineGap :: Unscaled
+data VerticalMetrics a = VMetrics
+  { ascent  :: a   
+  , descent :: a
+  , lineGap :: a
   }
   deriving Show
   
+instance Functor VerticalMetrics where
+  fmap f (VMetrics a d l) = VMetrics (f a) (f d) (f l)  
+  
 -- | As calculated by @(ascent - descent + lineGap)@.
-lineAdvance :: VerticalMetrics -> Unscaled
+lineAdvance :: Num a => VerticalMetrics a -> a
 lineAdvance vm = ascent vm - descent vm + lineGap vm  
 
 -- | As calculated by @(ascent - descent)@.
-verticalSize :: VerticalMetrics -> Unscaled
+verticalSize :: Num a => VerticalMetrics a -> a 
 verticalSize vm = ascent vm - descent vm
 
-scaleForPixelHeight :: VerticalMetrics -> Float -> Float 
+scaleForPixelHeight :: VerticalMetrics Unscaled -> Float -> Float 
 scaleForPixelHeight vm pixels = pixels / fromIntegral (verticalSize vm)
 
 -- 'leftSideBearing' is the offset from the current horizontal position to the left edge of the character;
 -- 'advanceWidth' is the offset from the current horizontal position to the next horizontal position.
-data HorizontalMetrics = HMetrics
-  { advanceWidth     :: Unscaled      
-  , leftSideBearing :: Unscaled
+data HorizontalMetrics a = HMetrics
+  { advanceWidth    :: a      
+  , leftSideBearing :: a
   }
   deriving Show
+
+instance Functor HorizontalMetrics where
+  fmap f (HMetrics a l) = HMetrics (f a) (f l)  
   
 -- | The convention is @BBox (x0,y0) (x1,y1)@.
 data BoundingBox a = BBox (a,a) (a,a) deriving Show
 
 --------------------------------------------------------------------------------
      
-getFontVerticalMetrics :: FontInfo -> IO VerticalMetrics
+getFontVerticalMetrics :: FontInfo -> IO (VerticalMetrics Unscaled)
 getFontVerticalMetrics fontinfo = 
   withFontInfo fontinfo $ \ptr -> do
     alloca $ \pasc -> alloca $ \pdesc -> alloca $ \pgap -> do
@@ -210,7 +328,7 @@ getFontVerticalMetrics fontinfo =
 
 --------------------------------------------------------------------------------
 
-getGlyphHorizontalMetrics :: FontInfo -> Glyph -> IO HorizontalMetrics
+getGlyphHorizontalMetrics :: FontInfo -> Glyph -> IO (HorizontalMetrics Unscaled)
 getGlyphHorizontalMetrics fontinfo glyph = 
   withFontInfo fontinfo $ \ptr -> do
     alloca $ \padv -> alloca $ \plsb  -> do
