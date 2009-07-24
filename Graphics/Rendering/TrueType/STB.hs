@@ -31,13 +31,13 @@ module Graphics.Rendering.TrueType.STB
   , Offset
   , Font
   , Glyph
-  --
+  -- * Initialization
   , loadTTF
   , withTTF
   , enumerateFonts
   , initFont
   , findGlyph
-  --
+  -- * Font metrics
   , Unscaled
   , HorizontalMetrics(..)
   , VerticalMetrics(..)
@@ -49,11 +49,12 @@ module Graphics.Rendering.TrueType.STB
   , getGlyphHorizontalMetrics
   , getGlyphKernAdvance
   , getGlyphBoundingBox
-  --
+  -- * Bitmaps
   , Scaling
   , Bitmap(..)
   , newBitmap
   , withBitmap
+  , flipBitmap
   , BitmapOfs
   , getGlyphBitmapBox
   , newGlyphBitmap
@@ -61,7 +62,7 @@ module Graphics.Rendering.TrueType.STB
   , renderGlyphIntoBitmap
   , bitmapArray
   , bitmapFloatArray
-  --
+  -- * Cached glyph storage
   , CachedBitmap(..)
   , BitmapCache
   , bmcVerticalMetrics
@@ -172,7 +173,8 @@ lookupUnicodeCache char calculate cache = do
       
 --------------------------------------------------------------------------------
 
--- | Enumerates the fonts found in a TrueType file.
+-- | Enumerates the fonts found in a TrueType file. Often there is only one,
+-- but there may be more.
 enumerateFonts :: TrueType -> IO [Offset] 
 enumerateFonts ttf = withTrueType ttf $ \ptr -> worker ptr 0 where
   worker ptr i = do
@@ -232,6 +234,7 @@ data BitmapCache = BMCache
   , bmc_scaling  :: (Float,Float)
   , bmc_cache    :: UnicodeCache (Maybe CachedBitmap)
   , bmc_vmetrics :: VerticalMetrics Float
+  , bmc_flipped  :: Bool
   }
 
 -- | Note: these metrics are scaled!
@@ -242,25 +245,27 @@ bmcScaling :: BitmapCache -> Scaling
 bmcScaling = bmc_scaling
 
 -- | Creates a new cache where glyph bitmaps with the given scaling
--- will be stored
-newBitmapCache :: Font -> (Float,Float) -> IO BitmapCache 
-newBitmapCache fontinfo scaling@(xscale,yscale) = do 
+-- will be stored. The second argument is whether the resulting bitmaps
+-- should be flipped vertically or not (this is useful with OpenGL).
+newBitmapCache :: Font -> Bool -> (Float,Float) -> IO BitmapCache 
+newBitmapCache fontinfo flipped scaling@(xscale,yscale) = do 
   cache <- newUnicodeCache
   vmetu <- getFontVerticalMetrics fontinfo
   let vmets = fmap (\y -> yscale * fromIntegral y) vmetu  
-  return $ BMCache fontinfo scaling cache vmets
+  return $ BMCache fontinfo scaling cache vmets flipped
   
 -- | Fetches a rendered glyph bitmap from the cache (rendering it first if
 -- it was not present in the cache before).
 getCachedBitmap :: BitmapCache -> Char -> IO (Maybe CachedBitmap)
-getCachedBitmap (BMCache font scaling@(xscale,yscale) cache vmet) char = 
+getCachedBitmap (BMCache font scaling@(xscale,yscale) cache vmet flipped) char = 
   lookupUnicodeCache char createBitmap cache
   where
     createBitmap char = do
       mglyph <- findGlyph font char
       case mglyph of
         Just glyph -> do
-          (bm,ofs) <- newGlyphBitmap font glyph scaling
+          (bm',ofs) <- newGlyphBitmap font glyph scaling
+          bm <- if flipped then flipBitmap bm' else return bm'
           hmetu <- getGlyphHorizontalMetrics font glyph
           let hmets = fmap (\x -> xscale * fromIntegral x) hmetu 
           return $ Just (CBM bm ofs hmets)
@@ -384,6 +389,18 @@ withBitmap :: Bitmap -> (Int -> Int -> Ptr Word8 -> IO a) -> IO a
 withBitmap bm action = do
   let (xsiz,ysiz) = bitmapSize bm
   withForeignPtr (bitmapPtr bm) $ \ptr -> action xsiz ysiz ptr  
+
+-- | Flips the bitmap vertically (leaving the original unchanged)
+flipBitmap :: Bitmap -> IO Bitmap
+flipBitmap (Bitmap siz@(xsiz,ysiz) fptr1) = withForeignPtr fptr1 $ \ptr1 -> do
+  let n = xsiz*ysiz
+  fptr2 <- mallocForeignPtrBytes n
+  withForeignPtr fptr2 $ \ptr2 -> do
+    forM_ [0..ysiz-1] $ \y1 -> do
+      let y2 = ysiz-1-y1
+      copyBytes (ptr2 `plusPtr` (y2*xsiz)) (ptr1 `plusPtr` (y1*xsiz)) xsiz
+  return (Bitmap siz fptr2)
+
 
 -- | NOTE: because of the way Haskell indexes rectangular arrays,
 -- the resulting array is indexed with @(y,x)@, as opposed to what
