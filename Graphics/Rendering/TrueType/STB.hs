@@ -460,8 +460,9 @@ getGlyphBitmapBox fontinfo glyph (xscale,yscale) =
         (fromIntegral x1, fromIntegral y1)
 
 -- | Creates a new bitmap just enough to fit the glyph with the given scaling,
--- and renders the glyph into it. The offset returned is the offset of the glyph origin
--- within the bitmap.
+-- and renders the glyph into it. The offset returned is the offset 
+-- in pixel space /from/ the glyph origin /to/ the top-left of the bitmap
+-- (so it's almost always negative).
 newGlyphBitmap :: Font -> Glyph -> Scaling -> IO (Bitmap,BitmapOfs)
 newGlyphBitmap fontinfo glyph (xscale,yscale) = do
   withFontInfo fontinfo $ \ptr -> do
