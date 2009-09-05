@@ -530,7 +530,8 @@ instance Storable TableLoc where
   poke = error "TableLoc/poke: not implemented"
 
 data CFontInfo = CFontInfo
-  { _data      :: Ptr Word8
+  { _userData  :: Ptr ()
+  , _data      :: Ptr Word8
   , _fontstart :: Int 
   , _numGlyphs :: Int
   , _tableloc  :: TableLoc
@@ -540,7 +541,7 @@ data CFontInfo = CFontInfo
   
 instance Storable CFontInfo where 
   alignment _ = alignment (undefined :: CInt)
-  sizeOf _    = sizeOf (undefined :: Ptr Word8)
+  sizeOf _    = 2 * sizeOf (undefined :: Ptr Word8)
               + sizeOf (undefined :: TableLoc)
               + 4 * sizeOf (undefined :: CInt)
   peek = error "CFontInfo/peek: not implemented"            
@@ -594,12 +595,27 @@ foreign import ccall unsafe "stb_truetype.h stbtt_GetGlyphBox"
 
 -------
 
+{-
+-- stb_truetype v0.2
 foreign import ccall unsafe "stb_truetype.h stbtt_FreeBitmap"
   stbtt_FreeBitmap :: Ptr Word8 -> IO () 
 
 foreign import ccall unsafe "stb_truetype.h &stbtt_FreeBitmap"
   bitmapFinalizer :: FunPtr (Ptr Word8 -> IO ())
-   
+-}
+
+-- stb_truetype v0.3, with "userdata"
+foreign import ccall unsafe "stb_truetype.h stbtt_FreeBitmap"
+  stbtt_FreeBitmap :: Ptr Word8 -> Ptr a -> IO () 
+
+foreign import ccall "wrapper" mkFinPtr 
+  :: (Ptr Word8 -> IO ()) -> IO (FinalizerPtr Word8)
+
+bitmapFinalizer :: FunPtr (Ptr Word8 -> IO ())
+bitmapFinalizer = unsafePerformIO $ mkFinPtr $ \p -> stbtt_FreeBitmap p nullPtr
+ 
+------
+
 {- 
 foreign import ccall unsafe "stb_truetype.h stbtt_GetCodepointBitmap"
   stbtt_GetCodepointBitmap 
@@ -618,6 +634,8 @@ foreign import ccall unsafe "stb_truetype.h stbtt_GetCodepointBitmapBox"
     :: Ptr CFontInfo -> CCodepoint -> CFloat -> CFloat
     -> Ptr CInt -> Ptr CInt -> Ptr CInt -> Ptr CInt -> IO ()
 -}
+
+------
 
 foreign import ccall unsafe "stb_truetype.h stbtt_GetGlyphBitmap"
   stbtt_GetGlyphBitmap 
