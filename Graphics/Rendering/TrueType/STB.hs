@@ -3,13 +3,10 @@
 --   * rewrite the file loading so that it we do not depend on ByteString
 --   * automatic glyph indexing, texture creation
 --
--- BUG in stb_truetype? 
---   * compound contours not implemented yet... 
---
 
 --
 -- Module      : Graphics.Rendering.TrueType.STB
--- Version     : 0.1.1
+-- Version     : 0.1.2
 -- License     : Public Domain
 -- Author      : Balazs Komuves
 -- Maintainer  : bkomuves (plus) hackage (at) gmail (dot) com
@@ -20,9 +17,8 @@
 
 -- | This is a wrapper around Sean Barrett's TrueType font rasterizer code.
 -- The original can be found at <http://nothings.org/stb/stb_truetype.h>.
--- The version of @stb-truetype@ used here is @0.2@.
+-- The version of @stb-truetype@ used here is @0.3@.
 --
--- Note: it seems that compound glyphs are not implemented yet!
 
 {-# LANGUAGE CPP, ForeignFunctionInterface #-}
 {-# CFILES cbits/wrapper.c #-}  -- for Hugs (?)

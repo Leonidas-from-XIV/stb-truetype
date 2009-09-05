@@ -1,5 +1,5 @@
 Name:                stb-truetype
-Version:             0.1.1
+Version:             0.1.2
 Synopsis:            A wrapper around Sean Barrett's TrueType rasterizer library.
 Description:         A wrapper around Sean Barrett's TrueType rasterizer library.
 License:             PublicDomain
