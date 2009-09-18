@@ -23,7 +23,7 @@
 {-# LANGUAGE CPP, ForeignFunctionInterface #-}
 {-# CFILES cbits/wrapper.c #-}  -- for Hugs (?)
 module Graphics.Rendering.TrueType.STB 
-  ( TrueType
+  ( TrueType(..)
   , Offset
   , Font
   , Glyph
