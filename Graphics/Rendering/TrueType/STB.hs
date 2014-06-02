@@ -92,6 +92,8 @@ import qualified Data.IntMap as IntMap
 import Foreign hiding (newArray)
 import Foreign.C
 
+import System.IO.Unsafe (unsafePerformIO)
+
 import Data.ByteString (ByteString)
 import qualified Data.ByteString as B
 import qualified Data.ByteString.Internal as BI
@@ -414,7 +416,7 @@ bitmapArray bm =
 #else
         writeArray ar (y,x) a
 #endif
-    unsafeFreeze ar
+    Arr.unsafeFreeze ar
                              
 bitmapFloatArray :: Bitmap -> IO (UArray (Int,Int) Float)
 bitmapFloatArray bm = 
@@ -431,7 +433,7 @@ bitmapFloatArray bm =
 #else
         writeArray ar (y,x) z
 #endif
-    unsafeFreeze ar
+    Arr.unsafeFreeze ar
 
 -- | Returns the size of the bitmap (in pixels) needed to 
 -- render the glyph with the given scaling.
@@ -656,4 +658,3 @@ foreign import ccall unsafe "stb_truetype.h stbtt_GetGlyphBitmapBox"
 
 --------------------------------------------------------------------------------
 
-  
